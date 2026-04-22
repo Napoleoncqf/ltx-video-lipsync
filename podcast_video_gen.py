@@ -166,15 +166,72 @@ def main():
         print("No segments generated!")
         return
 
-    # Concatenate
-    concat_list = os.path.join(OUTPUT_DIR, "concat_list.txt")
-    with open(concat_list, "w") as f:
-        for sf in segment_files:
-            f.write(f"file '{sf}'\n")
-
+    # Concatenate with crossfade transitions
+    XFADE_DURATION = 0.5  # seconds of crossfade between segments
     final_output = os.path.join(OUTPUT_DIR, f"podcast_{date_str}_seed{global_seed}.mp4")
-    subprocess.run(["ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list,
-                    "-c", "copy", final_output, "-y"], capture_output=True)
+
+    if len(segment_files) == 1:
+        # Single segment, just copy
+        shutil.copy2(segment_files[0], final_output)
+    elif len(segment_files) == 2:
+        # Two segments, single xfade
+        offset = SEGMENT_DURATION - XFADE_DURATION
+        subprocess.run([
+            "ffmpeg", "-i", segment_files[0], "-i", segment_files[1],
+            "-filter_complex",
+            f"[0:v][1:v]xfade=transition=fade:duration={XFADE_DURATION}:offset={offset}[v];"
+            f"[0:a][1:a]acrossfade=d={XFADE_DURATION}[a]",
+            "-map", "[v]", "-map", "[a]", final_output, "-y"
+        ], capture_output=True)
+    else:
+        # Multiple segments: chain xfade pairwise
+        # ffmpeg xfade only works on 2 inputs, so we chain iteratively
+        temp_files = []
+        current = segment_files[0]
+        for i in range(1, len(segment_files)):
+            temp_out = os.path.join(OUTPUT_DIR, f"_xfade_temp_{i}.mp4")
+            # Calculate offset: total duration of 'current' minus crossfade
+            probe = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", current],
+                capture_output=True, text=True
+            )
+            try:
+                cur_duration = float(json.loads(probe.stdout)["format"]["duration"])
+            except (json.JSONDecodeError, KeyError):
+                cur_duration = SEGMENT_DURATION
+            offset = cur_duration - XFADE_DURATION
+
+            subprocess.run([
+                "ffmpeg", "-i", current, "-i", segment_files[i],
+                "-filter_complex",
+                f"[0:v][1:v]xfade=transition=fade:duration={XFADE_DURATION}:offset={offset}[v];"
+                f"[0:a][1:a]acrossfade=d={XFADE_DURATION}[a]",
+                "-map", "[v]", "-map", "[a]", temp_out, "-y"
+            ], capture_output=True)
+
+            if os.path.exists(temp_out):
+                temp_files.append(temp_out)
+                current = temp_out
+            else:
+                # Crossfade failed, fallback to simple concat for this pair
+                print(f"  WARNING: Crossfade failed for segment {i}, using simple concat")
+                concat_list = os.path.join(OUTPUT_DIR, "_fallback_concat.txt")
+                with open(concat_list, "w") as f:
+                    f.write(f"file '{current}'\nfile '{segment_files[i]}'\n")
+                subprocess.run(["ffmpeg", "-f", "concat", "-safe", "0", "-i", concat_list,
+                                "-c", "copy", temp_out, "-y"], capture_output=True)
+                if os.path.exists(temp_out):
+                    temp_files.append(temp_out)
+                    current = temp_out
+
+        # Rename final temp to output
+        if current != segment_files[0]:
+            shutil.move(current, final_output)
+
+        # Cleanup temp files
+        for tf in temp_files:
+            if os.path.exists(tf) and tf != final_output:
+                os.remove(tf)
 
     if os.path.exists(final_output):
         size_mb = os.path.getsize(final_output) / 1e6
