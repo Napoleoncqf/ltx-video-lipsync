@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.precomputed/
+*.safetensors
+*.pt
+*.ckpt
+*.wav
+*.mp4
+*.png
+*.jpg
+ComfyUI-LTX-Podcast/
