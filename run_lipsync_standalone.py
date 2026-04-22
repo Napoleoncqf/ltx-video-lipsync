@@ -1,27 +1,28 @@
 """
-Run LatentSync standalone - mimics ComfyUI node's loading method.
-No ComfyUI overhead, 14GB VRAM available.
+Run LatentSync standalone without ComfyUI to minimize VRAM overhead.
+Requires: LatentSync 1.6 model downloaded to checkpoints/
 """
 import os, sys, gc, argparse
 
-# Set expandable segments BEFORE any CUDA init
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 
-LATENTSYNC_DIR = r"E:\ComfyUI-aki-v2\ComfyUI\custom_nodes\ComfyUI-LatentSyncWrapper"
+from config import *
+
 sys.path.insert(0, LATENTSYNC_DIR)
 
-VIDEO_INPUT = r"E:\ComfyUI-aki-v2\ComfyUI\output\lipsync_input.mp4"
+VIDEO_INPUT = os.path.join(COMFYUI_DIR, "output", "lipsync_input.mp4")
+VIDEO_OUTPUT = os.path.join(COMFYUI_DIR, "output", "lipsync_standalone_result.mp4")
+
 # Auto-detect today's podcast or use latest
 from datetime import datetime
+import glob as _glob
 today = datetime.now().strftime("%Y-%m-%d")
-AUDIO_INPUT = rf"D:\Projects\isotope\data\podcast\podcast_{today}.wav"
+AUDIO_INPUT = os.path.join(PODCAST_DIR, f"podcast_{today}.wav")
 if not os.path.exists(AUDIO_INPUT):
-    import glob
-    podcasts = sorted(glob.glob(r"D:\Projects\isotope\data\podcast\podcast_*.wav"))
+    podcasts = sorted(_glob.glob(os.path.join(PODCAST_DIR, "podcast_*.wav")))
     AUDIO_INPUT = podcasts[-1] if podcasts else AUDIO_INPUT
-VIDEO_OUTPUT = r"E:\ComfyUI-aki-v2\ComfyUI\output\lipsync_standalone_result.mp4"
 
 # Get video duration and trim audio
 import subprocess, json, tempfile
@@ -40,7 +41,6 @@ subprocess.run([
 ], capture_output=True)
 print(f"Audio trimmed: {trimmed_audio}")
 
-# GPU info
 if torch.cuda.is_available():
     free = torch.cuda.mem_get_info()[0] / 1e9
     total = torch.cuda.mem_get_info()[1] / 1e9
@@ -56,17 +56,15 @@ for f in ["stage2_512.yaml", "stage2.yaml"]:
         break
 if not config_path:
     configs = [f for f in os.listdir(config_dir) if f.endswith('.yaml')]
-    config_path = os.path.join(config_dir, configs[-1])  # Last = highest stage
+    config_path = os.path.join(config_dir, configs[-1])
 print(f"Config: {config_path}")
 
-# Build args (matching ComfyUI node)
 ckpt_path = os.path.join(LATENTSYNC_DIR, "checkpoints", "latentsync_unet.pt")
 whisper_path = os.path.join(LATENTSYNC_DIR, "checkpoints", "whisper", "tiny.pt")
 mask_path = os.path.join(LATENTSYNC_DIR, "latentsync", "utils", "mask.png")
 scheduler_path = os.path.join(LATENTSYNC_DIR, "configs")
 
 print(f"UNet: {ckpt_path} (exists: {os.path.exists(ckpt_path)})")
-print(f"Whisper: {whisper_path} (exists: {os.path.exists(whisper_path)})")
 
 from omegaconf import OmegaConf
 config = OmegaConf.load(config_path)
@@ -80,22 +78,20 @@ args = argparse.Namespace(
     audio_path=trimmed_audio,
     video_out_path=VIDEO_OUTPUT,
     seed=42,
-    inference_steps=30,
-    guidance_scale=2.0,
+    inference_steps=LIPSYNC_INFERENCE_STEPS,
+    guidance_scale=LIPSYNC_GUIDANCE_SCALE,
     scheduler_config_path=scheduler_path,
     whisper_ckpt_path=whisper_path,
     device="cuda" if torch.cuda.is_available() else "cpu",
-    batch_size=1,  # Minimal batch to save VRAM
+    batch_size=1,
     use_mixed_precision=True,
     temp_dir=temp_dir,
     mask_image_path=mask_path,
 )
 
-# Clean GPU
 gc.collect()
 torch.cuda.empty_cache()
 
-# Import and run inference script
 print("\nStarting LatentSync inference...")
 inference_script = os.path.join(LATENTSYNC_DIR, "scripts", "inference.py")
 
@@ -118,6 +114,5 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
-# Cleanup
 import shutil
 shutil.rmtree(temp_dir, ignore_errors=True)

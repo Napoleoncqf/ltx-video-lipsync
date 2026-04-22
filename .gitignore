@@ -9,3 +9,13 @@ __pycache__/
 *.png
 *.jpg
 ComfyUI-LTX-Podcast/
+config_local.py
+# Test scripts with hardcoded paths
+run_batch_test.py
+run_workflow.py
+adapt_workflow.py
+generate_*.py
+.gitignore
+*.md
+*.json
+!README.md
